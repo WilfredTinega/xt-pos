@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Shift{% endblock %}
+{% block content %}
+<h1>My shift</h1>
+
+<div class="grid-2">
+  <section class="panel">
+    {% if open_shift %}
+      <h2>Current shift <span class="badge badge-receive">open</span></h2>
+      <p class="muted small">
+        Opened {{ open_shift.opened_at.strftime('%Y-%m-%d %H:%M') }} ·
+        opening float {{ CURRENCY }} {{ '%.2f'|format(open_shift.opening_float) }}
+      </p>
+
+      <table class="table compact">
+        <tbody>
+          <tr><td>Sales</td><td class="r-amt">{{ summary.count }}</td></tr>
+          <tr><td>Takings</td><td class="r-amt">{{ CURRENCY }} {{ '%.2f'|format(summary.total) }}</td></tr>
+          <tr><td>Cash sales</td><td class="r-amt">{{ CURRENCY }} {{ '%.2f'|format(summary.cash_sales) }}</td></tr>
+          <tr><td><strong>Expected cash in drawer</strong></td>
+              <td class="r-amt"><strong>{{ CURRENCY }} {{ '%.2f'|format(summary.expected_cash) }}</strong></td></tr>
+        </tbody>
+      </table>
+
+      <form method="post" action="{{ url_for('shift_close') }}"
+            onsubmit="return confirm('Close this shift?')">
+        <label>Counted cash at close (optional)</label>
+        <input type="number" name="closing_cash" step="0.01" min="0" placeholder="Count the drawer…">
+        <button class="btn btn-primary" type="submit">Close shift</button>
+      </form>
+    {% else %}
+      <h2>Open a shift</h2>
+      <form method="post" action="{{ url_for('shift_open') }}">
+        <label>Opening cash float</label>
+        <input type="number" name="opening_float" step="0.01" min="0" value="0">
+        <label>Shift</label>
+        <select name="note" required>
+          <option value="" disabled selected>Select shift…</option>
+          <option value="Morning Shift (08:00–16:00)">Morning Shift — 8 hrs from 08:00</option>
+          <option value="Afternoon Shift (16:00–00:00)">Afternoon Shift — 8 hrs from 16:00</option>
+          <option value="Night Shift (00:00–08:00)">Night Shift — 8 hrs from 00:00</option>
+        </select>
+        <button class="btn btn-primary" type="submit">Open shift</button>
+      </form>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>My recent shifts</h2>
+    <table class="table compact">
+      <thead><tr><th>Opened</th><th>Closed</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {% for s in recent %}
+        <tr>
+          <td>{{ s.opened_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td>{{ s.closed_at.strftime('%Y-%m-%d %H:%M') if s.closed_at else '—' }}</td>
+          <td>
+            {% if s.is_open %}<span class="badge badge-receive">open</span>
+            {% else %}<span class="badge">closed</span>{% endif %}
+          </td>
+          <td><a class="link" href="{{ url_for('shift_summary', shift_id=s.id) }}">Summary</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">No shifts yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}
