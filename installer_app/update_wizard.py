@@ -50,7 +50,7 @@ DEFAULT_VERSION = "1.0.0"
 # the version (e.g. v1.2.0) and a XTPOS-<version>.zip is attached as an asset.
 # The GitHub "latest release" API always points at the newest one, so there is
 # nothing to hand-edit per release.
-GITHUB_REPO = "WilfredTinega/POS"
+GITHUB_REPO = "WilfredTinega/xt-pos"
 # Fallback used when the install folder's .env has no UPDATE_URL. The .env value
 # (written by the installer / editable on each machine) always wins if present.
 DEFAULT_UPDATE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"

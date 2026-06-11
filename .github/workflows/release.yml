@@ -1,0 +1,87 @@
+name: Release
+
+# Cut a release by pushing a version tag:
+#   git tag v1.1.1
+#   git push origin v1.1.1
+#
+# This reproduces release-github.bat on a Windows runner: it builds POS.exe,
+# the updater, the uninstaller, the one-click installer, and the in-app update
+# package (zip + manifest), then publishes a GitHub Release tagged v<version>
+# with those assets attached. The in-app updater reads this repo's "latest
+# release" automatically, so installed apps offer the new version on their next
+# check.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  # Allow a manual run for a tag you already pushed (Actions tab -> Run workflow).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to (re)build, e.g. v1.1.1"
+        required: true
+
+permissions:
+  contents: write   # required to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          RAW="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${RAW#v}"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building XT POS v${VERSION} (tag v${VERSION})"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Make the VERSION file match the tag so the build stamps the right number
+      # into version.txt and the update manifest, even if VERSION wasn't bumped
+      # in the commit the tag points at.
+      - name: Stamp VERSION from tag
+        shell: bash
+        run: printf '%s\n' "${{ steps.ver.outputs.version }}" > VERSION
+
+      # build-setup.bat creates its own .venv, installs build-requirements.txt,
+      # compiles the four exes, builds setup\XTPOS-Setup.exe, and packages
+      # release\XTPOS-<version>.zip + release\manifest.json. Reusing it keeps CI
+      # identical to the local release flow.
+      - name: Build installer + update package
+        shell: cmd
+        run: build-setup.bat
+
+      - name: Generate release notes from CHANGELOG
+        shell: bash
+        run: python release_notes.py "${{ steps.ver.outputs.version }}" > release/notes.md
+
+      - name: Verify build output
+        shell: bash
+        run: |
+          test -f "release/XTPOS-${{ steps.ver.outputs.version }}.zip" \
+            || { echo "::error::release/XTPOS-${{ steps.ver.outputs.version }}.zip was not produced"; exit 1; }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: XT POS ${{ steps.ver.outputs.tag }}
+          body_path: release/notes.md
+          files: |
+            release/XTPOS-${{ steps.ver.outputs.version }}.zip
+            release/manifest.json
+            setup/XTPOS-Setup.exe
