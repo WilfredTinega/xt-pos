@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -241,7 +242,21 @@ def _download_payload(log, progress=None):
         version, url, digest = _fetch_latest_release()
     except InstallError:
         raise
-    except Exception as e:  # noqa: BLE001 — offline / rate-limited / 404
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Reached GitHub fine — the repo just has no published release yet.
+            raise InstallError(
+                f"No published release was found for {GITHUB_REPO}.\n\n"
+                "The app is downloaded from this repository's GitHub Releases, "
+                "and none has been published yet. Publish a release (with an "
+                "XTPOS-<version>.zip asset) first, then run setup again.")
+        if e.code in (403, 429):
+            raise InstallError(
+                "GitHub is rate-limiting this connection. Wait a few minutes "
+                f"and try again.\n{e}")
+        raise InstallError(
+            f"GitHub returned an error (HTTP {e.code}). Try again later.\n{e}")
+    except Exception as e:  # noqa: BLE001 — offline / DNS / TLS
         raise InstallError(
             "Could not reach GitHub to download the app.\n"
             f"{e}\n\nCheck the internet connection and try again.")
