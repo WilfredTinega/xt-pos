@@ -1,93 +1,104 @@
 name: Release
 
-# Cut a release by pushing a version tag:
-#   git tag v1.1.1
-#   git push origin v1.1.1
+# Every push to main rebuilds POS.exe + Uninstall.exe, packages the app zip +
+# manifest, builds the online installer (XTPOS-Online-Setup.exe), and then
+# CREATES or UPDATES the GitHub Release for the current VERSION:
+#   - first push at a given VERSION  -> creates the release (tag v<VERSION>)
+#   - later pushes at the same VERSION -> refresh that release's assets in place
+# Bump the VERSION file when you want installed apps to see a NEW version to
+# update to (it becomes a new release; the app compares it to its version.txt).
 #
-# This reproduces release-github.bat on a Windows runner: it builds POS.exe +
-# Uninstall.exe, packages the app zip + manifest, and builds the online
-# bootstrapper installer, then publishes a GitHub Release tagged v<version> with
-# those assets attached. The app reads this repo's "latest release"
-# automatically, so installed apps offer the new version on their next check and
-# apply it by re-launching the installer in --update mode.
+# The online installer reads this repo's "latest release" and downloads the zip,
+# so a fresh install always gets the newest build and updates pull the new one.
 
 on:
   push:
-    tags:
-      - "v*.*.*"
-  # Allow a manual run for a tag you already pushed (Actions tab -> Run workflow).
+    branches:
+      - main
+  # Manual re-run from the Actions tab.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing version tag to (re)build, e.g. v1.1.1"
-        required: true
 
 permissions:
-  contents: write   # required to create the GitHub Release
+  contents: write   # required to create/update the GitHub Release
+
+# If several pushes land quickly, only the newest build publishes.
+concurrency:
+  group: release
+  cancel-in-progress: true
 
 jobs:
   release:
     runs-on: windows-latest
 
     steps:
-      - name: Determine version
-        id: ver
-        shell: bash
-        run: |
-          RAW="${{ github.event.inputs.tag || github.ref_name }}"
-          VERSION="${RAW#v}"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building XT POS v${VERSION} (tag v${VERSION})"
-
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.ver.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # Make the VERSION file match the tag so the build stamps the right number
-      # into version.txt and the update manifest, even if VERSION wasn't bumped
-      # in the commit the tag points at.
-      - name: Stamp VERSION from tag
+      # The VERSION file is the single source of truth for the release tag.
+      - name: Determine version
+        id: ver
         shell: bash
-        run: printf '%s\n' "${{ steps.ver.outputs.version }}" > VERSION
+        run: |
+          VERSION="$(tr -d ' \r\n' < VERSION)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building XT POS v${VERSION}"
 
       # build-setup.bat creates its own .venv, installs build-requirements.txt,
-      # compiles POS.exe + Uninstall.exe, and packages the release assets the
-      # installer downloads: release\XTPOS-<version>.zip + release\manifest.json.
+      # compiles POS.exe + Uninstall.exe, and packages release\XTPOS-<version>.zip
+      # + release\manifest.json (what the installer downloads).
       - name: Build app payload + update package
         shell: cmd
         run: build-setup.bat
 
-      # The online (bootstrapper) installer: a tiny exe that downloads the
-      # release zip above from GitHub at install/update time instead of bundling
-      # it. This is the single shippable installer.
+      # The online (bootstrapper) installer: a tiny exe that downloads the zip
+      # above from GitHub at install/update time. This is the shippable file.
       - name: Build online installer
         shell: cmd
         run: build-online-setup.bat
 
-      - name: Generate release notes from CHANGELOG
+      - name: Generate release notes
         shell: bash
-        run: python release_notes.py "${{ steps.ver.outputs.version }}" > release/notes.md
+        run: |
+          python release_notes.py "${{ steps.ver.outputs.version }}" > release/notes.md 2>/dev/null || true
+          if [ ! -s release/notes.md ]; then
+            echo "XT POS ${{ steps.ver.outputs.tag }} — automated build from ${GITHUB_SHA::7}." > release/notes.md
+          fi
 
       - name: Verify build output
         shell: bash
         run: |
           test -f "release/XTPOS-${{ steps.ver.outputs.version }}.zip" \
             || { echo "::error::release/XTPOS-${{ steps.ver.outputs.version }}.zip was not produced"; exit 1; }
+          test -f "setup/XTPOS-Online-Setup.exe" \
+            || { echo "::error::setup/XTPOS-Online-Setup.exe was not produced"; exit 1; }
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: XT POS ${{ steps.ver.outputs.tag }}
-          body_path: release/notes.md
-          files: |
-            release/XTPOS-${{ steps.ver.outputs.version }}.zip
-            release/manifest.json
-            setup/XTPOS-Online-Setup.exe
+      # Create the release on the first push at this VERSION, otherwise refresh
+      # its assets in place (--clobber overwrites the same-named files). Uses the
+      # runner's preinstalled gh with the automatic GITHUB_TOKEN.
+      - name: Publish or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          ASSETS=(
+            "release/XTPOS-${{ steps.ver.outputs.version }}.zip"
+            "release/manifest.json"
+            "setup/XTPOS-Online-Setup.exe"
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Updating existing release $TAG"
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            gh release edit "$TAG" --title "XT POS $TAG" \
+              --notes-file release/notes.md --latest --draft=false
+          else
+            echo "Creating release $TAG"
+            gh release create "$TAG" "${ASSETS[@]}" --title "XT POS $TAG" \
+              --notes-file release/notes.md --latest --target "$GITHUB_SHA"
+          fi
