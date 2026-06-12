@@ -12,6 +12,10 @@ release manifest.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-06-12
+### Changed
+- minor updates
+
 ## [1.2.0] - 2026-06-12
 ### Added
 - **Admin-assigned shifts.** An administrator now assigns each user's work
