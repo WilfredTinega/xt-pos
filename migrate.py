@@ -66,11 +66,12 @@ def upgrade_users_table():
     with engine.connect() as conn:
         conn.execute(text(
             "ALTER TABLE users "
-            "ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT 0"
+            "ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT 0, "
+            "ADD COLUMN IF NOT EXISTS assigned_shift VARCHAR(64) NULL"
         ))
         conn.commit()
     engine.dispose()
-    print("✓ users table has must_change_password column.")
+    print("✓ users table has must_change_password / assigned_shift columns.")
 
 
 def upgrade_products_table():

@@ -22,7 +22,7 @@ from sqlalchemy.exc import OperationalError, InterfaceError
 from config import Config, resource_path, app_dir
 from models import (
     db, Product, Sale, SaleItem, StockMovement, User, Shift, ExchangeRate,
-    Setting, MpesaTransaction, Customer,
+    Setting, MpesaTransaction, Customer, SHIFT_TYPES,
 )
 import rates as fx
 import payments as pay
@@ -324,7 +324,9 @@ def register_routes(app):
         shift = Shift(
             user_id=g.user.id,
             opening_float=_dec(request.form.get("opening_float", 0)),
-            note=request.form.get("note", "").strip()[:255] or None,
+            # The shift schedule is assigned by an admin on the user page, so
+            # the cashier no longer picks it here — copy their assignment.
+            note=(g.user.assigned_shift or None),
         )
         db.session.add(shift)
         db.session.commit()
@@ -361,7 +363,7 @@ def register_routes(app):
     @admin_required
     def users():
         people = User.query.order_by(User.is_active.desc(), User.name).all()
-        return render_template("users.html", users=people)
+        return render_template("users.html", users=people, shift_types=SHIFT_TYPES)
 
     @app.route("/users/save", methods=["POST"])
     @admin_required
@@ -371,8 +373,12 @@ def register_routes(app):
         name = request.form.get("name", "").strip()
         role = request.form.get("role", "cashier")
         password = request.form.get("password", "")
+        assigned_shift = request.form.get("assigned_shift", "").strip()
         if role not in ("admin", "cashier"):
             role = "cashier"
+        # Only accept a known shift label; blank clears any assignment.
+        if assigned_shift not in SHIFT_TYPES:
+            assigned_shift = None
         if not username or not name:
             flash("Username and name are required.", "error")
             return redirect(url_for("users"))
@@ -386,6 +392,7 @@ def register_routes(app):
             user.username = username
             user.name = name
             user.role = role
+            user.assigned_shift = assigned_shift
             if password:
                 user.set_password(password)
         else:
@@ -395,7 +402,8 @@ def register_routes(app):
             if not password:
                 flash("A password is required for a new user.", "error")
                 return redirect(url_for("users"))
-            user = User(username=username, name=name, role=role)
+            user = User(username=username, name=name, role=role,
+                        assigned_shift=assigned_shift)
             user.set_password(password)
             db.session.add(user)
 

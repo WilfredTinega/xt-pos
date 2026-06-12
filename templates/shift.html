@@ -7,6 +7,7 @@
   <section class="panel">
     {% if open_shift %}
       <h2>Current shift <span class="badge badge-receive">open</span></h2>
+      {% if open_shift.note %}<p><strong>{{ open_shift.note }}</strong></p>{% endif %}
       <p class="muted small">
         Opened {{ open_shift.opened_at.strftime('%Y-%m-%d %H:%M') }} ·
         opening float {{ CURRENCY }} {{ '%.2f'|format(open_shift.opening_float) }}
@@ -30,18 +31,18 @@
       </form>
     {% else %}
       <h2>Open a shift</h2>
-      <form method="post" action="{{ url_for('shift_open') }}">
-        <label>Opening cash float</label>
-        <input type="number" name="opening_float" step="0.01" min="0" value="0">
-        <label>Shift</label>
-        <select name="note" required>
-          <option value="" disabled selected>Select shift…</option>
-          <option value="Morning Shift (08:00–16:00)">Morning Shift — 8 hrs from 08:00</option>
-          <option value="Afternoon Shift (16:00–00:00)">Afternoon Shift — 8 hrs from 16:00</option>
-          <option value="Night Shift (00:00–08:00)">Night Shift — 8 hrs from 00:00</option>
-        </select>
-        <button class="btn btn-primary" type="submit">Open shift</button>
-      </form>
+      {% if current_user.assigned_shift %}
+        <p class="muted small">Your assigned shift</p>
+        <p><strong>{{ current_user.assigned_shift }}</strong></p>
+        <form method="post" action="{{ url_for('shift_open') }}">
+          <label>Opening cash float</label>
+          <input type="number" name="opening_float" step="0.01" min="0" value="0">
+          <button class="btn btn-primary" type="submit">Open shift</button>
+        </form>
+      {% else %}
+        <p class="muted">No shift has been assigned to you yet. Ask an
+        administrator to assign your shift on the Users page.</p>
+      {% endif %}
     {% endif %}
   </section>
 

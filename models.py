@@ -15,6 +15,16 @@ from werkzeug.security import generate_password_hash, check_password_hash
 db = SQLAlchemy()
 
 
+# Work-schedule shifts an admin can assign to a user. The chosen label is
+# stored verbatim on ``User.assigned_shift`` and copied onto the till session's
+# ``note`` when the cashier opens their shift, so receipts/Z-reports keep it.
+SHIFT_TYPES = [
+    "Morning Shift (08:00–16:00)",
+    "Afternoon Shift (16:00–00:00)",
+    "Night Shift (00:00–08:00)",
+]
+
+
 class User(db.Model):
     """A staff account that logs in to run the POS."""
     __tablename__ = "users"
@@ -27,6 +37,10 @@ class User(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     # Force a password change on next login (set for the default admin account).
     must_change_password = db.Column(db.Boolean, nullable=False, default=False)
+    # The work shift an admin assigned to this user (one of SHIFT_TYPES); NULL
+    # until assigned. Pre-fills the till session note so the cashier no longer
+    # picks a shift each time they open one.
+    assigned_shift = db.Column(db.String(64))
     created_at = db.Column(db.DateTime, default=datetime.now)
 
     def set_password(self, raw):
@@ -46,6 +60,7 @@ class User(db.Model):
             "name": self.name,
             "role": self.role,
             "is_active": self.is_active,
+            "assigned_shift": self.assigned_shift or "",
         }
 
 
