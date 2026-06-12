@@ -1,9 +1,12 @@
 @echo off
 REM ===== Build the app payload + update package =====
-REM Compiles POS.exe and Uninstall.exe, then packages the release artifacts the
-REM ONLINE installer (and the in-app updater) download from GitHub:
-REM     release\XTPOS-<version>.zip     POS.exe + Uninstall.exe
+REM Compiles POS.exe, then packages the release artifacts the ONLINE installer
+REM (and the in-app updater) download from GitHub:
+REM     release\XTPOS-<version>.zip     POS.exe
 REM     release\manifest.json           {version, url, notes, sha256}
+REM
+REM No Uninstall.exe is built: the installer itself uninstalls (--uninstall),
+REM so the payload is just POS.exe — a much smaller download.
 REM
 REM This does NOT build an installer. The single shippable installer is the
 REM online bootstrapper - build it with build-online-setup.bat (it downloads
@@ -51,21 +54,16 @@ if exist "%WORK%\" rmdir /s /q "%WORK%"
 if exist "build\" rmdir /s /q "build"
 if exist "dist\" rmdir /s /q "dist"
 
-echo [1/2] Compiling the POS app (POS.exe, single file)...
+echo [1/1] Compiling the POS app (POS.exe, single file)...
 python -m PyInstaller pos.spec --noconfirm --distpath "%WORK%" --workpath "%PYI%" || goto :error
 
-echo [2/2] Building the uninstaller...
-python -m PyInstaller uninstall.spec --noconfirm --distpath "%WORK%" --workpath "%PYI%" || goto :error
-
-echo Staging the executables into a flat payload (%STAGE%)...
+echo Staging the executable into a flat payload (%STAGE%)...
 mkdir "%STAGE%"
-copy /y "%WORK%\POS.exe"       "%STAGE%\POS.exe"       >nul || goto :error
-copy /y "%WORK%\Uninstall.exe" "%STAGE%\Uninstall.exe" >nul || goto :error
+copy /y "%WORK%\POS.exe" "%STAGE%\POS.exe" >nul || goto :error
 
 if defined DO_SIGN (
-    echo Signing the executables...
-    call :sign "%STAGE%\POS.exe"       || goto :error
-    call :sign "%STAGE%\Uninstall.exe" || goto :error
+    echo Signing the executable...
+    call :sign "%STAGE%\POS.exe" || goto :error
 )
 
 REM ===== Update package =====

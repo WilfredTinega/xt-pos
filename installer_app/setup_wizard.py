@@ -34,10 +34,10 @@ APP_NAME = "XT POS"
 APP_PUBLISHER = "Xonal Tech"
 INSTALL_DIRNAME = "XTPOS"
 APP_EXE = "POS.exe"
-UNINSTALL_EXE = "Uninstall.exe"
-# This installer doubles as the updater: dropped next to the app at install
-# time, the running POS re-launches it with --update to refresh the app files
-# in place (it elevates, downloads the latest release, and swaps them in).
+# This installer is the only shippable exe: dropped next to the app at install
+# time as XTPOS-Setup.exe, the app re-launches it with --update to refresh the
+# app files in place, and Add/Remove Programs runs it with --uninstall. So no
+# separate Update.exe or Uninstall.exe need to ship in the payload.
 SETUP_EXE = "XTPOS-Setup.exe"
 # Default update manifest URL written into .env. Leave blank to configure later
 # (edit UPDATE_URL in the install folder's .env).
@@ -1242,11 +1242,24 @@ def main():
     parser.add_argument("--update", action="store_true",
                         help="Update an existing install in place (the app "
                              "launches this), then exit.")
+    parser.add_argument("--uninstall", action="store_true",
+                        help="Uninstall the app (Add/Remove Programs runs this); "
+                             "delegates to the bundled uninstaller.")
     parser.add_argument("--silent", action="store_true",
-                        help="With --update: apply the update with no GUI.")
+                        help="With --update/--uninstall: run with no GUI.")
     # Accept Windows-style /update and /silent too.
     norm = [("--" + a[1:]) if a.startswith("/") else a for a in sys.argv[1:]]
     args, _ = parser.parse_known_args(norm)
+
+    if args.uninstall:
+        # Uninstall lives in the bundled `uninstall` module (no separate
+        # Uninstall.exe ships). Hand it the remaining flags (--silent,
+        # --purge-data, --remove-mariadb) by dropping our own --uninstall token.
+        import uninstall
+        sys.argv = [sys.argv[0]] + [
+            a for a in sys.argv[1:] if a.lower().lstrip("/-") != "uninstall"]
+        uninstall.main()
+        return
 
     if args.update:
         if args.silent:
