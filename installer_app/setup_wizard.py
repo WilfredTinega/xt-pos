@@ -178,10 +178,13 @@ def _hidden_startupinfo():
 
 
 # How many parallel connections to split a download across, and the smallest
-# file worth splitting. Multiple connections get past per-connection throttling
-# on GitHub's / Microsoft's CDNs, so the download finishes much faster.
-DOWNLOAD_CONNECTIONS = 8
-PARALLEL_MIN_BYTES = 3 * 1024 * 1024
+# file worth splitting. Servers (GitHub/Fastly, MariaDB's mirrors) commonly cap
+# the speed of a SINGLE connection well below the link's capacity, so splitting
+# the file across many connections is what actually makes the download fast —
+# on a quick link 16 streams can be ~10x a single one. Each segment retries and
+# the whole thing falls back to one resumable stream if ranges aren't supported.
+DOWNLOAD_CONNECTIONS = 16
+PARALLEL_MIN_BYTES = 2 * 1024 * 1024
 
 
 def _human_size(n):
