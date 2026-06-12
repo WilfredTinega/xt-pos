@@ -775,11 +775,14 @@ def _dir_size_kb(path):
 
 def register_uninstall(install_dir, version, log):
     """Register the app in Add/Remove Programs so it uninstalls like any
-    normal Windows application (Settings → Apps, or Control Panel)."""
+    normal Windows application (Settings → Apps, or Control Panel).
+
+    Uninstall is handled by the installer itself (XTPOS-Setup.exe --uninstall),
+    dropped next to the app — so no separate Uninstall.exe needs to ship."""
     import winreg
-    uninstaller = os.path.join(install_dir, UNINSTALL_EXE)
-    if not os.path.isfile(uninstaller):
-        log("  (uninstaller not bundled; skipping Add/Remove Programs entry)")
+    setup_exe = os.path.join(install_dir, SETUP_EXE)
+    if not os.path.isfile(setup_exe):
+        log("  (installer not staged; skipping Add/Remove Programs entry)")
         return
     exe = os.path.join(install_dir, APP_EXE)
     values = {
@@ -788,8 +791,8 @@ def register_uninstall(install_dir, version, log):
         "Publisher": APP_PUBLISHER,
         "InstallLocation": install_dir,
         "DisplayIcon": exe,
-        "UninstallString": f'"{uninstaller}"',
-        "QuietUninstallString": f'"{uninstaller}" /silent /purge-data',
+        "UninstallString": f'"{setup_exe}" --uninstall',
+        "QuietUninstallString": f'"{setup_exe}" --uninstall --silent --purge-data',
     }
     try:
         with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY, 0,
