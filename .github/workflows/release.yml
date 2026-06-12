@@ -21,10 +21,11 @@ on:
 permissions:
   contents: write   # required to create/update the GitHub Release
 
-# If several pushes land quickly, only the newest build publishes.
+# Serialize release runs so every push completes its own build and updates the
+# release in order (cancel-in-progress: false = no commit's build is dropped).
 concurrency:
   group: release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
