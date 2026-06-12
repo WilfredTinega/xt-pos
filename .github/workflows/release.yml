@@ -65,6 +65,14 @@ jobs:
         shell: cmd
         run: build-setup.bat
 
+      # The online (bootstrapper) installer: a tiny exe that downloads the
+      # latest release zip from GitHub at install time instead of bundling it.
+      # Runs after build-setup.bat and writes into the same setup\ folder
+      # without wiping the self-contained XTPOS-Setup.exe.
+      - name: Build online installer
+        shell: cmd
+        run: build-online-setup.bat
+
       - name: Generate release notes from CHANGELOG
         shell: bash
         run: python release_notes.py "${{ steps.ver.outputs.version }}" > release/notes.md
@@ -85,3 +93,4 @@ jobs:
             release/XTPOS-${{ steps.ver.outputs.version }}.zip
             release/manifest.json
             setup/XTPOS-Setup.exe
+            setup/XTPOS-Online-Setup.exe

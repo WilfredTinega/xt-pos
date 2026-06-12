@@ -16,6 +16,7 @@ target PC. Internet is required during installation to download MariaDB.
 """
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import shutil
@@ -24,6 +25,7 @@ import sys
 import tempfile
 import threading
 import urllib.request
+import zipfile
 
 APP_NAME = "XT POS"
 APP_PUBLISHER = "Xonal Tech"
@@ -45,6 +47,14 @@ MARIADB_URL = (
 )
 # Microsoft Edge WebView2 Evergreen bootstrapper (tiny, pulls the runtime).
 WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+
+# Where the online ("bootstrapper") installer pulls the app from. Each release
+# is tagged with its version (e.g. v1.2.0) and ships an XTPOS-<version>.zip
+# asset holding the flat POS.exe / Update.exe / Uninstall.exe payload. The
+# GitHub "latest release" API always points at the newest one, so there is
+# nothing to hand-edit per release — the same as the in-app updater uses.
+GITHUB_REPO = "WilfredTinega/xt-pos"
+GITHUB_LATEST_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
 # --------------------------------------------------------------------------
@@ -169,6 +179,121 @@ def download(url, dest, progress=None):
     urllib.request.urlretrieve(url, dest, hook)
 
 
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# --------------------------------------------------------------------------
+# Payload source — bundled (offline installer) or downloaded (online installer)
+# --------------------------------------------------------------------------
+def _bundled_payload():
+    """Return the flat payload baked into this exe (the self-contained
+    installer), or None when this is the online bootstrapper (nothing bundled,
+    so the app is fetched from GitHub at run time)."""
+    p = payload_dir()
+    if os.path.isdir(p) and os.path.isfile(os.path.join(p, APP_EXE)):
+        return p
+    return None
+
+
+def _fetch_latest_release():
+    """Read GitHub's 'latest release' for GITHUB_REPO and pick the app zip.
+
+    Returns (version, zip_url, sha256_hex). Raises InstallError if the release
+    has no XTPOS .zip asset. GitHub release JSON gives `tag_name` (e.g.
+    'v1.2.0') and `assets[]`, each with `name`, `browser_download_url`, and a
+    `digest` like 'sha256:...'.
+    """
+    req = urllib.request.Request(GITHUB_LATEST_URL, headers={
+        "User-Agent": "XTPOS-Setup",
+        "Accept": "application/vnd.github+json",
+    })
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    version = str(data.get("tag_name", "")).strip().lstrip("vV")
+    zip_url, digest = None, ""
+    for asset in data.get("assets") or []:
+        name = (asset.get("name") or "").lower()
+        if name.startswith("xtpos") and name.endswith(".zip"):
+            zip_url = asset.get("browser_download_url")
+            raw = asset.get("digest") or ""
+            digest = raw.split(":", 1)[1] if raw.startswith("sha256:") else ""
+            break
+    if not zip_url:
+        raise InstallError(
+            "The latest GitHub release has no XTPOS .zip asset to download.")
+    return version, zip_url, digest
+
+
+def _download_payload(log, progress=None):
+    """Online installer: pull the latest release zip from GitHub, verify it,
+    and extract it. Returns (payload_dir, version)."""
+    log("Checking GitHub for the latest version…")
+    try:
+        version, url, digest = _fetch_latest_release()
+    except InstallError:
+        raise
+    except Exception as e:  # noqa: BLE001 — offline / rate-limited / 404
+        raise InstallError(
+            "Could not reach GitHub to download the app.\n"
+            f"{e}\n\nCheck the internet connection and try again.")
+
+    log(f"Downloading XT POS {version} from GitHub (this can take a minute)…")
+    tmp_zip = os.path.join(tempfile.gettempdir(), "xtpos-payload.zip")
+    try:
+        download(url, tmp_zip, progress)
+    except Exception as e:  # noqa: BLE001
+        raise InstallError(f"Download failed.\n{e}")
+
+    if digest:
+        log("Verifying download…")
+        if _sha256(tmp_zip).lower() != digest.lower():
+            raise InstallError(
+                "The downloaded app package failed its integrity check. "
+                "Try again.")
+
+    extract_dir = os.path.join(tempfile.gettempdir(), "xtpos-payload")
+    shutil.rmtree(extract_dir, ignore_errors=True)
+    try:
+        with zipfile.ZipFile(tmp_zip) as zf:
+            zf.extractall(extract_dir)
+    except zipfile.BadZipFile:
+        raise InstallError("The downloaded package is not a valid .zip.")
+    finally:
+        try:
+            os.remove(tmp_zip)
+        except OSError:
+            pass
+
+    # If the zip wraps everything in a single top folder, descend into it.
+    entries = [e for e in os.listdir(extract_dir) if not e.startswith("__MACOSX")]
+    src = extract_dir
+    if len(entries) == 1:
+        only = os.path.join(extract_dir, entries[0])
+        if os.path.isdir(only) and not os.path.isfile(
+                os.path.join(extract_dir, APP_EXE)):
+            src = only
+    if not os.path.isfile(os.path.join(src, APP_EXE)):
+        raise InstallError(
+            f"The downloaded package did not contain {APP_EXE}.")
+    return src, version
+
+
+def resolve_payload(log, progress=None):
+    """Where the app files come from: the bundled payload (self-contained
+    installer) or a fresh download from GitHub (online installer). Returns
+    (payload_dir, version)."""
+    bundled = _bundled_payload()
+    if bundled:
+        log("Using the app bundled in this installer.")
+        return bundled, APP_VERSION
+    return _download_payload(log, progress)
+
+
 # --------------------------------------------------------------------------
 # Install steps
 # --------------------------------------------------------------------------
@@ -240,12 +365,11 @@ def app_already_working(install_dir, log):
         return False
 
 
-def copy_app(install_dir, log):
+def copy_app(install_dir, src, log):
     log(f"Installing the app to {install_dir}…")
     os.makedirs(install_dir, exist_ok=True)
-    src = payload_dir()
     if not os.path.isdir(src):
-        raise InstallError("Bundled app payload is missing from the installer.")
+        raise InstallError("The app payload to install is missing.")
     shutil.copytree(src, install_dir, dirs_exist_ok=True)
 
 
@@ -284,13 +408,13 @@ def write_env(install_dir, user, password, port, shop):
         fh.write("\n".join(lines) + "\n")
 
 
-def write_version(install_dir):
+def write_version(install_dir, version):
     """Record the installed version so the updater can compare against the
     online manifest."""
     try:
         with open(os.path.join(install_dir, "version.txt"), "w",
                   encoding="utf-8") as fh:
-            fh.write(APP_VERSION + "\n")
+            fh.write(str(version).strip() + "\n")
     except OSError:
         pass
 
@@ -383,7 +507,7 @@ def _dir_size_kb(path):
     return total // 1024
 
 
-def register_uninstall(install_dir, log):
+def register_uninstall(install_dir, version, log):
     """Register the app in Add/Remove Programs so it uninstalls like any
     normal Windows application (Settings → Apps, or Control Panel)."""
     import winreg
@@ -394,7 +518,7 @@ def register_uninstall(install_dir, log):
     exe = os.path.join(install_dir, APP_EXE)
     values = {
         "DisplayName": APP_NAME,
-        "DisplayVersion": APP_VERSION,
+        "DisplayVersion": version,
         "Publisher": APP_PUBLISHER,
         "InstallLocation": install_dir,
         "DisplayIcon": exe,
@@ -425,9 +549,16 @@ def run_install(user, password, port, shop, log, progress=None):
     install_dir = os.path.join(
         os.environ.get("ProgramFiles", r"C:\Program Files"), INSTALL_DIRNAME)
 
+    # Resolve the app payload FIRST. For the online installer this downloads the
+    # latest release from GitHub, so a connectivity/availability problem fails
+    # fast — before we touch MariaDB or the database.
+    payload, version = resolve_payload(log, progress)
+    if progress:
+        progress(0)
+
     mariadb_was_present = not install_mariadb(password, port, log, progress)
     install_webview2(log)
-    copy_app(install_dir, log)
+    copy_app(install_dir, payload, log)
     _drop_self_copy(install_dir, log)
 
     # If this PC is already set up and the database is reachable with the
@@ -441,9 +572,9 @@ def run_install(user, password, port, shop, log, progress=None):
         init_database(install_dir, password, user, port, log, mariadb_was_present)
         write_env(install_dir, user, password, port, shop)
 
-    write_version(install_dir)
+    write_version(install_dir, version)
     create_shortcuts(install_dir, log)
-    register_uninstall(install_dir, log)
+    register_uninstall(install_dir, version, log)
     log("")
     log("✓ Installation complete.")
     return install_dir
@@ -464,15 +595,25 @@ def run_gui():
                     "this computer.")
 
         def build(self):
+            online = _bundled_payload() is None
+            get_app = (
+                "    •  Download the latest POS app from GitHub and install it "
+                "into Program Files, then create the database.\n\n"
+                if online else
+                "    •  Copy the POS application into Program Files and create "
+                "the database.\n\n"
+            )
+            net_note = (" An internet connection is required to download the "
+                        "app and MariaDB." if online else "")
             steps = (
                 "The wizard will:\n\n"
                 "    •  Install the MariaDB database engine (downloaded "
                 "automatically if it isn't already present).\n\n"
                 "    •  Install the WebView2 runtime needed for the app window.\n\n"
-                "    •  Copy the POS application into Program Files and create "
-                "the database.\n\n"
+                + get_app +
                 "    •  Add Start-Menu and Desktop shortcuts.\n\n"
-                "Administrator rights are required. Click Next to continue."
+                "Administrator rights are required." + net_note +
+                " Click Next to continue."
             )
             tk.Label(self.frame, text=steps, bg=WHITE, justify="left",
                      anchor="nw", wraplength=540).pack(fill="both", expand=True)
@@ -666,12 +807,16 @@ def main():
     args = parser.parse_args()
 
     if args.selftest:
+        bundled = _bundled_payload()
         report = {
             "is_admin": is_admin(),
             "mariadb_installed": is_mariadb_installed(),
             "webview2_installed": is_webview2_installed(),
+            "mode": "offline (bundled payload)" if bundled
+                    else "online (downloads from GitHub)",
             "payload_dir": payload_dir(),
-            "payload_has_exe": os.path.isfile(os.path.join(payload_dir(), APP_EXE)),
+            "payload_has_exe": bool(bundled),
+            "github_repo": GITHUB_REPO,
         }
         text = json.dumps(report, indent=2)
         print(text)
