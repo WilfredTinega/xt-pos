@@ -176,12 +176,63 @@ def _hidden_startupinfo():
     return si
 
 
-def download(url, dest, progress=None):
-    def hook(block_num, block_size, total_size):
-        if progress and total_size > 0:
-            pct = min(100, int(block_num * block_size * 100 / total_size))
-            progress(pct)
-    urllib.request.urlretrieve(url, dest, hook)
+def download(url, dest, progress=None, log=None, attempts=6):
+    """Download url -> dest with progress, retrying and RESUMING on dropped or
+    incomplete connections.
+
+    Large GitHub release assets redirect to a CDN, and a single dropped socket
+    would otherwise fail the whole install ("retrieval incomplete: got only N
+    of M bytes"). Each attempt sends a Range header to continue from the bytes
+    already on disk (GitHub's CDN supports ranged requests), so transfers pick up
+    where they left off instead of restarting or giving up. Raises InstallError
+    if every attempt fails."""
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        have = os.path.getsize(dest) if os.path.exists(dest) else 0
+        headers = {"User-Agent": "XTPOS-Setup"}
+        if have:
+            headers["Range"] = f"bytes={have}-"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                # Work out the full expected size for the progress bar.
+                crange = resp.headers.get("Content-Range")
+                clen = resp.headers.get("Content-Length")
+                if crange and "/" in crange:
+                    total = int(crange.rsplit("/", 1)[1])
+                elif clen is not None:
+                    total = have + int(clen)
+                else:
+                    total = 0
+                # 206 = the server honoured our Range and we append; anything
+                # else means start the file over.
+                resumed = getattr(resp, "status", 200) == 206 and have > 0
+                if not resumed:
+                    have = 0
+                with open(dest, "ab" if resumed else "wb") as fh:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        have += len(chunk)
+                        if progress and total:
+                            progress(min(100, int(have * 100 / total)))
+            got = os.path.getsize(dest)
+            if not total or got >= total:
+                return
+            last_err = f"incomplete: got {got} of {total} bytes"
+        except Exception as e:  # noqa: BLE001 — network drop / timeout / DNS
+            last_err = str(e) or e.__class__.__name__
+        if attempt < attempts:
+            if log:
+                log(f"  connection dropped ({last_err}); resuming "
+                    f"(attempt {attempt + 1}/{attempts})…")
+            time.sleep(min(2 * attempt, 10))
+    raise InstallError(
+        f"Download failed after {attempts} attempts.\n{last_err}\n\n"
+        "The connection to GitHub keeps dropping. Check the internet "
+        "connection (a stable link helps for the ~30 MB download) and try again.")
 
 
 def _sha256(path):
@@ -263,10 +314,14 @@ def _download_payload(log, progress=None):
 
     log(f"Downloading XT POS {version} from GitHub (this can take a minute)…")
     tmp_zip = os.path.join(tempfile.gettempdir(), "xtpos-payload.zip")
+    # Start fresh: never resume onto a partial file left by an earlier run (it
+    # could be a different build and corrupt the result). Resume happens only
+    # within this download() call's own retries.
     try:
-        download(url, tmp_zip, progress)
-    except Exception as e:  # noqa: BLE001
-        raise InstallError(f"Download failed.\n{e}")
+        os.remove(tmp_zip)
+    except OSError:
+        pass
+    download(url, tmp_zip, progress, log)
 
     if digest:
         log("Verifying download…")
