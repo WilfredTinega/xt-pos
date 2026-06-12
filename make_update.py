@@ -13,7 +13,7 @@ Usage:
         --base-url http://127.0.0.1:8000 --notes "Test build"
 
 Outputs (default ./release):
-    release/XTPOS-<version>.zip     POS.exe + Uninstall.exe
+    release/XTPOS-<version>.zip     POS.exe
     release/manifest.json           {version, url, notes, sha256}
 
 The zip deliberately contains ONLY the app executables — never .env (which holds
@@ -27,9 +27,10 @@ import os
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-# Only these files are shipped in the app payload — see the module docstring.
-# (No Update.exe: the installer itself applies updates, in --update mode.)
-APP_FILES = ["POS.exe", "Uninstall.exe"]
+# Only POS.exe ships in the payload. The installer (dropped as XTPOS-Setup.exe)
+# applies updates (--update) and uninstalls (--uninstall) itself, so neither an
+# Update.exe nor an Uninstall.exe is shipped — keeping the download small.
+APP_FILES = ["POS.exe"]
 
 
 def read_version():

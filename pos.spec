@@ -38,7 +38,13 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy", "PIL"],
+    # Trim modules the POS never uses to shrink POS.exe (and the download):
+    #   tkinter/matplotlib/numpy/PIL — not used by the app at all
+    #   sqlite3 — the app uses MariaDB/PyMySQL, so the bundled sqlite3.dll
+    #             (~0.8 MB) is dead weight
+    #   bz2/lzma — extra compression codecs nothing in the app imports
+    excludes=["tkinter", "matplotlib", "numpy", "PIL",
+              "sqlite3", "bz2", "lzma"],
     noarchive=False,
 )
 

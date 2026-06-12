@@ -12,6 +12,10 @@ release manifest.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-06-12
+### Changed
+- minor updates
+
 ## [1.2.2] - 2026-06-12
 ### Changed
 - minor updates
