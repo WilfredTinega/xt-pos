@@ -14,7 +14,7 @@ REM
 REM Prerequisites (one-time):
 REM   - GitHub CLI installed + authenticated:  gh auth login
 REM   - This folder is a git repo with a GitHub remote (gh detects the repo)
-REM   - Set GITHUB_REPO ("owner/name") in config.py AND installer_app\update_wizard.py
+REM   - Set GITHUB_REPO ("owner/name") in config.py AND installer_app\setup_wizard.py
 REM   - Describe the changes under "## [Unreleased]" in CHANGELOG.md first
 cd /d "%~dp0"
 
@@ -39,7 +39,7 @@ echo Bumping version (%BUMP%)...
 set /p APPVER=<VERSION
 
 echo.
-echo Building app, installer, and update package for v%APPVER% ...
+echo Building app payload + update package for v%APPVER% ...
 call build-setup.bat || exit /b 1
 
 if not exist "release\XTPOS-%APPVER%.zip" (
@@ -48,16 +48,20 @@ if not exist "release\XTPOS-%APPVER%.zip" (
 )
 
 echo.
+echo Building the online installer ...
+call build-online-setup.bat || exit /b 1
+
+echo.
 echo Writing release notes from CHANGELOG.md ...
 %PY% release_notes.py %APPVER% > "release\notes-%APPVER%.md"
 
 echo.
 echo Publishing GitHub Release v%APPVER% ...
-REM Attach the update zip (what the in-app updater downloads) and, if present,
-REM the full installer (handy for brand-new installs). --notes-file gives the
+REM Attach the app zip (what the installer downloads on install AND update) and
+REM the online installer (for brand-new installs). --notes-file gives the
 REM release body shown in the app's "Update available" notice.
 set "ASSETS=release\XTPOS-%APPVER%.zip"
-if exist "setup\XTPOS-Setup.exe" set "ASSETS=%ASSETS% setup\XTPOS-Setup.exe"
+if exist "setup\XTPOS-Online-Setup.exe" set "ASSETS=%ASSETS% setup\XTPOS-Online-Setup.exe"
 
 gh release create "v%APPVER%" %ASSETS% ^
     --title "XT POS v%APPVER%" ^

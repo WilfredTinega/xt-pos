@@ -12,13 +12,30 @@ release manifest.
 
 ## [Unreleased]
 ### Added
-- **Automatic updates via GitHub Releases.** The updater reads the repo's
-  "latest release" (tag = version, with `XTPOS-<version>.zip` attached), so
-  publishing a release is all it takes — no manifest to hand-edit. Admins now
-  see an in-app "Update available — Update now" toast that launches the updater.
-  Publish with `release-github.bat` (bumps, builds, and `gh release create`).
-  Set `GITHUB_REPO` ("owner/name") in `config.py` and `update_wizard.py`.
-  The repo must be public so the updater can read releases and download assets.
+- **Online installer (`XTPOS-Online-Setup.exe`).** A small bootstrapper that
+  bundles no app files — at install time it downloads the latest
+  `XTPOS-<version>.zip` from this repo's GitHub release, verifies its sha256,
+  and installs it. The same exe always installs the newest version, and it can
+  be run on any machine straight from the release page. Build it with
+  `build-online-setup.bat`.
+
+### Changed
+- **Updates are now applied by the installer, not a separate `Update.exe`.**
+  The in-app "Update now" prompt re-launches the installer in `--update` mode
+  (it elevates, downloads the latest release, closes the app, swaps the files,
+  and reopens). `Update.exe` / `update_wizard.py` have been removed.
+- **The self-contained/offline installer and the legacy Inno Setup path are
+  gone.** The online installer is the only installer. `build-setup.bat` now just
+  compiles `POS.exe` + `Uninstall.exe` and packages the release zip + manifest;
+  `setup.spec`, `update.spec`, `build.bat`, `build-all.bat`, `release.bat`,
+  `build_installers.ps1`, and `installer/` were removed.
+- **Automatic updates via GitHub Releases.** The app reads the repo's "latest
+  release" (tag = version, with `XTPOS-<version>.zip` attached), so publishing a
+  release is all it takes — no manifest to hand-edit. Admins see an in-app
+  "Update available — Update now" toast. Publish with `release-github.bat`
+  (bumps, builds, and `gh release create`). Set `GITHUB_REPO` ("owner/name") in
+  `config.py` and `installer_app/setup_wizard.py`. The repo must be public so
+  the app can read releases and download assets.
 
 ### Changed
 - The "database not reachable" page no longer shows the host/port/database name.

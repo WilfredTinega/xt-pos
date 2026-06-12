@@ -1,10 +1,10 @@
 """In-app update detection for the running POS.
 
-The updater (Update.exe / installer_app/update_wizard.py) does the actual
-download-and-apply. This module only lets the *running* POS detect that a newer
-GitHub release exists, so the UI can show an "Update available" notice. It is
-deliberately dependency-free (urllib + json) and never raises — callers get a
-plain dict.
+This module only lets the *running* POS detect that a newer GitHub release
+exists, so the UI can show an "Update available" notice. Applying the update is
+done by re-launching the installer in --update mode (it elevates, downloads the
+latest release, swaps the files, and relaunches). This module is deliberately
+dependency-free (urllib + json) and never raises — callers get a plain dict.
 
 Version sources, in order:
   1. version.txt next to POS.exe (written at install time)

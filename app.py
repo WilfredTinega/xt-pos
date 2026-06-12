@@ -1010,15 +1010,33 @@ def register_routes(app):
     @app.route("/api/update/launch", methods=["POST"])
     @admin_required
     def api_update_launch():
-        """Open the bundled updater (Update.exe) to download + apply the update."""
-        exe = os.path.join(app_dir(), "Update.exe")
+        """Apply the update by re-launching the installer in --update mode.
+
+        The installer (XTPOS-Setup.exe, dropped next to POS.exe at install time)
+        elevates, downloads the latest release from GitHub, closes this app,
+        swaps the files in place, and relaunches it. POS.exe runs unelevated and
+        cannot replace its own files in Program Files, so the elevated installer
+        does it — launched via ShellExecute "runas" so Windows shows the UAC
+        prompt and passes the --update argument.
+        """
+        import ctypes
+        exe = os.path.join(app_dir(), "XTPOS-Setup.exe")
         if not os.path.isfile(exe):
             return jsonify({
                 "ok": False,
                 "error": "Updater not found. (Only available in the installed app.)",
             }), 404
         try:
-            os.startfile(exe)  # noqa: S606 — launching our own signed updater
+            # ShellExecuteW(hwnd, verb, file, params, dir, show). "runas" forces
+            # the elevation prompt; >32 means it started. (os.startfile can't
+            # pass the --update argument, so we call ShellExecute directly.)
+            rc = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", exe, "--update", None, 1)
+            if rc <= 32:
+                return jsonify({
+                    "ok": False,
+                    "error": f"Could not start the updater (code {rc}).",
+                }), 500
             return jsonify({"ok": True})
         except Exception as e:  # noqa: BLE001
             return jsonify({"ok": False, "error": str(e)}), 500

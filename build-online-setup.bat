@@ -1,9 +1,9 @@
 @echo off
 REM ===== Build the ONLINE installer: setup\XTPOS-Online-Setup.exe =====
 REM A tiny bootstrapper that downloads the latest release from GitHub at
-REM install time, so it does NOT need POS.exe / Update.exe / Uninstall.exe to
-REM be compiled first. Ship this one small file to install on any 64-bit
-REM Windows PC straight from GitHub.
+REM install time, so it does NOT need POS.exe / Uninstall.exe to be compiled
+REM first. Ship this one small file to install on any 64-bit Windows PC
+REM straight from GitHub. It also serves as the updater (run with --update).
 REM
 REM It writes into setup\ WITHOUT wiping it, so it can run after build-setup.bat
 REM (the offline installer) and both exes end up side by side in setup\.

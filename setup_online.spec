@@ -1,11 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Builds the ONLINE bootstrapper installer: setup\XTPOS-Online-Setup.exe (onefile).
 #
-# Unlike setup.spec, this does NOT bundle the app payload. At run time the
-# wizard reads GitHub's "latest release" for the configured repo, downloads the
-# XTPOS-<version>.zip asset, verifies its sha256, and installs that. The result
-# is a tiny, version-independent installer you can run on any machine to pull
-# the newest POS straight from GitHub.
+# It does NOT bundle the app payload. At run time the wizard reads GitHub's
+# "latest release" for the configured repo, downloads the XTPOS-<version>.zip
+# asset, verifies its sha256, and installs that. The result is a tiny,
+# version-independent installer you can run on any machine to pull the newest
+# POS straight from GitHub. The same exe, run with --update, applies updates.
 #
 #   Build it via build-online-setup.bat (no need to compile the app exes first —
 #   they are downloaded at install time).

@@ -178,10 +178,11 @@
         try {
           const res = await fetch("/api/update/launch", { method: "POST" });
           const data = await res.json();
-          if (data.ok) window.showToast("Opening the updater…", "info");
-          else window.showToast(data.error || "Could not start the updater.", "error");
+          if (data.ok) window.showToast(
+            "Updating… approve the prompt; XT POS will close and reopen.", "info");
+          else window.showToast(data.error || "Could not start the update.", "error");
         } catch (_) {
-          window.showToast("Could not start the updater.", "error");
+          window.showToast("Could not start the update.", "error");
         }
       }
       async function checkForUpdate(verbose) {

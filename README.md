@@ -7,9 +7,12 @@ WebView2 window. All data — products, stock, and sales — lives in a **local
 MariaDB** database. Payments are recorded locally (cash / card / mobile money),
 and stock is added and counted by **scanning barcodes**.
 
-The app compiles to a single **`POS.exe`**, and ships as a **Windows installer**
-that downloads and installs MariaDB, asks for the admin (root) username and
-password during setup, and creates the database automatically.
+The app compiles to a single **`POS.exe`**, and ships as a small **online
+Windows installer** (`XTPOS-Online-Setup.exe`) that downloads the app from this
+repo's latest GitHub release, downloads and installs MariaDB, asks for the admin
+(root) username and password during setup, and creates the database
+automatically. Updates are applied from inside the app (it re-launches the same
+installer in update mode).
 
 > Built per `readme`: *"Windows app with local MariaDB and a POS UI, payments
 > done locally, scanning of stock into the system, tracking of stock and sales"*,
@@ -39,19 +42,21 @@ password during setup, and creates the database automatically.
 | Web / views | Flask + Jinja2 templates + vanilla JS           |
 | Server      | waitress (local WSGI, background thread)        |
 | Database    | MariaDB (local), via SQLAlchemy + PyMySQL       |
-| Packaging   | PyInstaller (POS.exe) + Inno Setup (installer)  |
+| Packaging   | PyInstaller (POS.exe) + online installer (GitHub releases) |
 
 ---
 
 ## For end users — installing the app
 
-1. Get **`XTPOS-Setup.exe`** (one file ~34 MB) and double-click it. Approve
-   the Windows admin (UAC) prompt.
+1. Get **`XTPOS-Online-Setup.exe`** (a small file, ~12 MB) from the latest
+   [GitHub release](https://github.com/WilfredTinega/xt-pos/releases/latest)
+   and double-click it. Approve the Windows admin (UAC) prompt.
 2. The setup window asks for:
    - **Admin username** (default `root`) and **password** — the database account
      the POS will use. *Remember these.*
    - **Database port** (default `3306`) and your **shop name**.
 3. Click **Install**. It then automatically:
+   - **Downloads the latest POS app** from this repo's GitHub release,
    - **Downloads MariaDB** and installs it as a Windows service using the
      password you chose (skipped if MariaDB is already present),
    - Installs the **WebView2** runtime if it's missing,
@@ -60,64 +65,76 @@ password during setup, and creates the database automatically.
    - Adds Start-Menu + Desktop shortcuts.
 4. Click **Finish & Launch** — the POS opens in its own window.
 
+> **The installer always installs the newest version** — it pulls the app from
+> GitHub at install time, so the same file never goes stale.
+
+> **Updating.** Inside the app, **Menu → Check for updates**. When a newer
+> release exists you'll see an "Update now" prompt; approving it re-runs the
+> installer in update mode, which downloads the new version, swaps the files,
+> and reopens the app. Your database and settings are left untouched.
+
 > **Re-running the installer is safe.** If the app is already set up and its
 > database is reachable, a re-run just refreshes the app files and leaves
 > MariaDB, the database, and your saved password untouched (no password needed).
-> It only asks for / uses the password when setting things up for the first time.
 
 > Requirements on the target PC: 64-bit Windows 10/11 and an internet connection
-> *during installation* (to download MariaDB). Nothing else needs to be
-> pre-installed — Python, MariaDB, and the runtime are all handled for you.
+> *during installation and updates* (to download the app + MariaDB). Nothing else
+> needs to be pre-installed — Python, MariaDB, and the runtime are all handled.
 
 ---
 
-## For developers — building the installer
+## For developers — building & releasing
 
-You build on a dev machine; end users only get the one `XTPOS-Setup.exe`.
-The installer is built with **PyInstaller only** — no other tools required.
+You build on a dev machine; end users only get the one small
+`XTPOS-Online-Setup.exe`. Everything is built with **PyInstaller only** — no
+other tools required.
 
 ### Prerequisite (dev machine only)
 - **Python 3.10+** (with *"Add Python to PATH"*).
 
-### One command
+### The two build steps
 ```
-build-setup.bat
+build-setup.bat          :: compile POS.exe + Uninstall.exe, package the
+                         :: release zip + manifest into release\
+build-online-setup.bat   :: build the installer  ->  setup\XTPOS-Online-Setup.exe
 ```
-This compiles the app to a single `POS.exe`, builds the updater and
-uninstaller, and bundles all three inside the installer
-**`setup\XTPOS-Setup.exe`** — the only file left in `setup\` once the build
-finishes. Ship that single file. (The installed app folder is flat too: just
-`POS.exe`, `Update.exe`, and `Uninstall.exe` — no nested `_internal` directory.)
+`build-setup.bat` produces the **app payload** the installer downloads:
+`release\XTPOS-<version>.zip` (POS.exe + Uninstall.exe) and `release\manifest.json`.
+`build-online-setup.bat` produces the **only shippable file**,
+`setup\XTPOS-Online-Setup.exe` — a small bootstrapper that bakes in *no* app
+files and instead downloads that zip from the latest GitHub release at install
+(and update) time. The installed app folder is flat: `POS.exe`, `Uninstall.exe`,
+`.env`, `version.txt`, and a dropped copy of the installer (`XTPOS-Setup.exe`)
+that the app re-runs to update.
 
 The installer logic lives in [installer_app/setup_wizard.py](installer_app/setup_wizard.py);
-to target a different MariaDB version, edit `MARIADB_VERSION` / `MARIADB_URL`
-at the top of it.
-
-> An alternative Inno Setup installer ([installer/pos.iss](installer/pos.iss)) is
-> also included if you prefer that toolchain (it needs Inno Setup 6 +
-> `build-all.bat`), but `build-setup.bat` is the recommended, dependency-free path.
+to target a different MariaDB version, edit `MARIADB_VERSION` / `MARIADB_URL`,
+or the release source, edit `GITHUB_REPO`, at the top of it.
 
 ### Versioning & releases
 
-The version is tracked in **one place — the [`VERSION`](VERSION) file** — and flows
-everywhere from there: the build stamps it into `version.txt` next to `POS.exe`
-(what the in-app updater reads), and the Inno Setup installer reads it for its
-filename and Add/Remove-Programs entry. Changes are recorded in
-[`CHANGELOG.md`](CHANGELOG.md).
+The version is tracked in **one place — the [`VERSION`](VERSION) file** — and
+flows everywhere from there: the build stamps it into the release tag and the
+`XTPOS-<version>.zip`, and the installer writes it to `version.txt` next to
+`POS.exe` (what the in-app update check compares against the latest release).
+Changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
 
-**Every time you change the app, cut a new build so the version moves with it:**
+**Cut a release with one command** (needs the [GitHub CLI](https://cli.github.com/),
+`gh auth login`):
 
 ```
-release.bat            :: bump patch (1.1.0 -> 1.1.1), then rebuild
-release.bat minor      :: new feature      (1.1.0 -> 1.2.0)
-release.bat major      :: breaking change  (1.1.0 -> 2.0.0)
-release.bat 1.4.2      :: set an explicit version
+release-github.bat            :: bump patch (1.1.0 -> 1.1.1), build, publish
+release-github.bat minor      :: new feature      (1.1.0 -> 1.2.0)
+release-github.bat major      :: breaking change  (1.1.0 -> 2.0.0)
+release-github.bat 1.4.2      :: set an explicit version
 ```
 
-`release.bat` runs `bump_version.py` (updates `VERSION` and opens a new
-`CHANGELOG.md` section) and then `build-all.bat`. Fill in what changed under the
-new changelog heading. If you only want the app (no installer), run `build.bat`;
-both `build.bat` and `build-setup.bat` stamp `version.txt` automatically.
+It runs `bump_version.py` (updates `VERSION` + opens a new `CHANGELOG.md`
+section), builds the app payload and the installer, and publishes a GitHub
+Release tagged `v<version>` with the zip, manifest, and
+`XTPOS-Online-Setup.exe` attached. Pushing a `v*.*.*` tag does the same on CI
+(see [.github/workflows/release.yml](.github/workflows/release.yml)). Installed
+apps offer the new version on their next update check.
 
 ---
 
@@ -156,15 +173,16 @@ models.py          SQLAlchemy models (products, sales, sale_items, stock_movemen
 init_db.py         dev helper: create DB + tables from .env
 seed.py            optional sample data
 pos.spec           PyInstaller spec for the app (POS.exe)
-setup.spec         PyInstaller spec for the installer (bundles the app)
-build-setup.bat    >>> build the one-click installer (recommended)
-build.bat          compile just POS.exe
-release.bat        >>> bump the version + rebuild (use after every change)
+setup_online.spec  PyInstaller spec for the online installer (no payload bundled)
+build-setup.bat    >>> build POS.exe + Uninstall.exe + the release zip/manifest
+build-online-setup.bat  >>> build the installer (setup\XTPOS-Online-Setup.exe)
+release-github.bat >>> bump the version, build, and publish a GitHub release
+make_update.py     packages the app payload zip + manifest for a release
 VERSION            single source of truth for the app version
 CHANGELOG.md       what changed in each version
 bump_version.py    bumps VERSION + opens a new changelog section
-installer_app/setup_wizard.py   the installer: GUI + MariaDB download/install + DB + launch
-installer/pos.iss  alternative Inno Setup installer (optional)
+updates.py         in-app check for a newer GitHub release (the "Update" notice)
+installer_app/setup_wizard.py   the installer/updater: GUI + GitHub download + MariaDB + DB + launch
 templates/         Jinja pages (dashboard, pos, products, stock, sales, receipt, db_error)
 static/            CSS + JS (barcode scanning, cart, stock receiving) + img/ (logo, favicon)
 assets/icon.ico    app/installer icon (generated)

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 import zipfile
 
@@ -32,7 +33,10 @@ APP_PUBLISHER = "Xonal Tech"
 INSTALL_DIRNAME = "XTPOS"
 APP_EXE = "POS.exe"
 UNINSTALL_EXE = "Uninstall.exe"
-UPDATE_EXE = "Update.exe"
+# This installer doubles as the updater: dropped next to the app at install
+# time, the running POS re-launches it with --update to refresh the app files
+# in place (it elevates, downloads the latest release, and swaps them in).
+SETUP_EXE = "XTPOS-Setup.exe"
 # Default update manifest URL written into .env. Leave blank to configure later
 # (edit UPDATE_URL in the install folder's .env).
 DEFAULT_UPDATE_URL = ""
@@ -50,7 +54,7 @@ WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 
 # Where the online ("bootstrapper") installer pulls the app from. Each release
 # is tagged with its version (e.g. v1.2.0) and ships an XTPOS-<version>.zip
-# asset holding the flat POS.exe / Update.exe / Uninstall.exe payload. The
+# asset holding the flat POS.exe / Uninstall.exe payload. The
 # GitHub "latest release" API always points at the newest one, so there is
 # nothing to hand-edit per release — the same as the in-app updater uses.
 GITHUB_REPO = "WilfredTinega/xt-pos"
@@ -370,19 +374,49 @@ def copy_app(install_dir, src, log):
     os.makedirs(install_dir, exist_ok=True)
     if not os.path.isdir(src):
         raise InstallError("The app payload to install is missing.")
-    shutil.copytree(src, install_dir, dirs_exist_ok=True)
+    # Walk-copy with a brief retry per file. On an update re-run the previous
+    # POS.exe was just closed, and Windows can hold its handle open for a moment
+    # after the process exits — a short retry lets the overwrite succeed instead
+    # of failing the whole update.
+    for root, _dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        dest_dir = install_dir if rel == "." else os.path.join(install_dir, rel)
+        os.makedirs(dest_dir, exist_ok=True)
+        for f in files:
+            s = os.path.join(root, f)
+            d = os.path.join(dest_dir, f)
+            for attempt in range(10):
+                try:
+                    shutil.copy2(s, d)
+                    break
+                except PermissionError:
+                    if attempt == 9:
+                        raise InstallError(
+                            f"Could not replace {f} — it is still in use. "
+                            "Close XT POS and try again.")
+                    time.sleep(0.5)
+
+
+def close_running_app(log):
+    """Close a running POS.exe so its file can be replaced (update re-run)."""
+    log("Closing XT POS if it is open…")
+    subprocess.run(["taskkill", "/f", "/im", APP_EXE],
+                   creationflags=_no_window(), startupinfo=_hidden_startupinfo())
+    # Give Windows a moment to release the executable's file handle.
+    time.sleep(1.0)
 
 
 def _drop_self_copy(install_dir, log):
-    """Copy this installer next to the app so the app can re-run it later to
-    auto-install MariaDB on first launch / repair a broken setup."""
+    """Copy this installer next to the app. The running POS re-launches it with
+    --update to apply updates, and it can also repair a broken setup / install
+    MariaDB on first launch."""
     try:
         if getattr(sys, "frozen", False):
-            dest = os.path.join(install_dir, "XTPOS-Setup.exe")
+            dest = os.path.join(install_dir, SETUP_EXE)
             if os.path.abspath(sys.executable) != os.path.abspath(dest):
                 shutil.copy2(sys.executable, dest)
     except Exception as e:
-        log(f"  (could not stage the repair installer: {e})")
+        log(f"  (could not stage the updater/repair installer: {e})")
 
 
 def _env_quote(value):
@@ -488,12 +522,8 @@ def create_shortcuts(install_dir, log):
 
     _make_shortcut(os.path.join(desktop, f"{APP_NAME}.lnk"), exe, install_dir, log)
     _make_shortcut(os.path.join(start_menu, f"{APP_NAME}.lnk"), exe, install_dir, log)
-
-    # A Start-Menu "Check for Updates" shortcut, if the updater shipped.
-    updater = os.path.join(install_dir, UPDATE_EXE)
-    if os.path.isfile(updater):
-        _make_shortcut(os.path.join(start_menu, f"{APP_NAME} — Check for Updates.lnk"),
-                       updater, install_dir, log)
+    # Updates are handled inside the app now (Menu → Check for updates), so no
+    # separate updater shortcut is created.
 
 
 def _dir_size_kb(path):
@@ -578,6 +608,43 @@ def run_install(user, password, port, shop, log, progress=None):
     log("")
     log("✓ Installation complete.")
     return install_dir
+
+
+def run_update(log, progress=None):
+    """Update an existing install in place: download the latest release from
+    GitHub, close the running POS, swap the app files, and bump version.txt.
+    Leaves the database, .env credentials, and MariaDB untouched. Raises
+    InstallError on failure. Returns (install_dir, version)."""
+    install_dir = os.path.join(
+        os.environ.get("ProgramFiles", r"C:\Program Files"), INSTALL_DIRNAME)
+    if not os.path.isfile(os.path.join(install_dir, APP_EXE)):
+        raise InstallError(
+            f"XT POS is not installed in {install_dir}. Run the installer "
+            "first.")
+
+    payload, version = _download_payload(log, progress)
+    if progress:
+        progress(0)
+    current = ""
+    try:
+        with open(os.path.join(install_dir, "version.txt"), encoding="utf-8") as fh:
+            current = fh.read().strip()
+    except OSError:
+        pass
+
+    close_running_app(log)
+    copy_app(install_dir, payload, log)
+    # Re-stage the updater copy in case this release ships a newer installer.
+    _drop_self_copy(install_dir, log)
+    write_version(install_dir, version)
+    # Keep the Add/Remove Programs version in sync.
+    register_uninstall(install_dir, version, log)
+    log("")
+    if current and current == version:
+        log(f"✓ Reinstalled version {version}.")
+    else:
+        log(f"✓ Updated to version {version}.")
+    return install_dir, version
 
 
 # --------------------------------------------------------------------------
@@ -797,6 +864,115 @@ def run_gui():
 
 
 # --------------------------------------------------------------------------
+# GUI — the in-app updater (Updating → Done), launched as XTPOS-Setup.exe --update
+# --------------------------------------------------------------------------
+def run_update_gui():
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+
+    from wizard_ui import Wizard, Page, WHITE, make_log_box, append_log
+
+    class UpdatePage(Page):
+        title = f"Updating {APP_NAME}"
+        subtitle = "Downloading the latest version from GitHub and applying it…"
+
+        def build(self):
+            self.running = False
+            self.done = False
+            self.progress = ttk.Progressbar(self.frame, mode="determinate")
+            self.progress.pack(fill="x", pady=(2, 8))
+            self.log_box = make_log_box(self.frame)
+            self.log_box.pack(fill="both", expand=True)
+
+        def _log(self, msg):
+            self.wizard.after(lambda: append_log(self.log_box, msg))
+
+        def _progress(self, pct):
+            self.wizard.after(lambda: self.progress.configure(value=pct))
+
+        def on_enter(self):
+            if self.done or self.running:
+                return
+            self.running = True
+            self.wizard.set_next_enabled(False)
+            self.wizard.set_cancel_enabled(False)
+            threading.Thread(target=self._worker, daemon=True).start()
+
+        def _worker(self):
+            try:
+                _d, version = run_update(self._log, self._progress)
+                self.wizard.shared["version"] = version
+                self.wizard.shared["applied"] = True
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                self._log(f"\nERROR: {msg}")
+                self.wizard.after(
+                    lambda: messagebox.showerror("Update failed", msg))
+            self.done = True
+            self.running = False
+
+            def ok():
+                self.progress.configure(value=100)
+                self.wizard.set_next_enabled(True)
+            self.wizard.after(ok)
+
+        def next_text(self):
+            return "Next"
+
+        def show_back(self):
+            return False
+
+        def show_cancel(self):
+            return not self.done
+
+    class DonePage(Page):
+        title = "Done"
+        subtitle = ""
+
+        def build(self):
+            self.msg = tk.Label(self.frame, bg=WHITE, justify="left",
+                                anchor="nw", wraplength=540, text="")
+            self.msg.pack(anchor="w", pady=(0, 14))
+            self.relaunch = tk.BooleanVar(value=True)
+            self.relaunch_chk = tk.Checkbutton(
+                self.frame, bg=WHITE, variable=self.relaunch,
+                text=f"Open {APP_NAME} now")
+
+        def on_enter(self):
+            if self.wizard.shared.get("applied"):
+                self.msg.config(
+                    text=f"XT POS is now version "
+                         f"{self.wizard.shared.get('version', '')}.")
+                self.relaunch_chk.pack(anchor="w")
+            else:
+                self.msg.config(text="No changes were made.")
+
+        def next_text(self):
+            return "Finish"
+
+        def show_back(self):
+            return False
+
+        def show_cancel(self):
+            return False
+
+    icon = resource_path(os.path.join("assets", "icon.ico"))
+    wiz = Wizard(f"{APP_NAME} — Update", icon_path=icon, width=620, height=500)
+    wiz.add_page(UpdatePage)
+    done = wiz.add_page(DonePage)
+
+    def on_finish(shared):
+        if shared.get("applied") and done.relaunch.get():
+            install_dir = os.path.join(
+                os.environ.get("ProgramFiles", r"C:\Program Files"),
+                INSTALL_DIRNAME)
+            launch_app(install_dir)
+
+    wiz.on_finish = on_finish
+    wiz.start()
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 def main():
@@ -804,7 +980,25 @@ def main():
     parser.add_argument("--selftest", action="store_true",
                         help="Print environment detection + payload status and exit.")
     parser.add_argument("--out", help="Write selftest output to this file.")
-    args = parser.parse_args()
+    parser.add_argument("--update", action="store_true",
+                        help="Update an existing install in place (the app "
+                             "launches this), then exit.")
+    parser.add_argument("--silent", action="store_true",
+                        help="With --update: apply the update with no GUI.")
+    # Accept Windows-style /update and /silent too.
+    norm = [("--" + a[1:]) if a.startswith("/") else a for a in sys.argv[1:]]
+    args, _ = parser.parse_known_args(norm)
+
+    if args.update:
+        if args.silent:
+            try:
+                run_update(print)
+            except Exception as e:  # noqa: BLE001
+                print(f"ERROR: {e}")
+                sys.exit(1)
+        else:
+            run_update_gui()
+        return
 
     if args.selftest:
         bundled = _bundled_payload()

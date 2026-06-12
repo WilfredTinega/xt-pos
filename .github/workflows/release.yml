@@ -4,12 +4,12 @@ name: Release
 #   git tag v1.1.1
 #   git push origin v1.1.1
 #
-# This reproduces release-github.bat on a Windows runner: it builds POS.exe,
-# the updater, the uninstaller, the one-click installer, and the in-app update
-# package (zip + manifest), then publishes a GitHub Release tagged v<version>
-# with those assets attached. The in-app updater reads this repo's "latest
-# release" automatically, so installed apps offer the new version on their next
-# check.
+# This reproduces release-github.bat on a Windows runner: it builds POS.exe +
+# Uninstall.exe, packages the app zip + manifest, and builds the online
+# bootstrapper installer, then publishes a GitHub Release tagged v<version> with
+# those assets attached. The app reads this repo's "latest release"
+# automatically, so installed apps offer the new version on their next check and
+# apply it by re-launching the installer in --update mode.
 
 on:
   push:
@@ -58,17 +58,15 @@ jobs:
         run: printf '%s\n' "${{ steps.ver.outputs.version }}" > VERSION
 
       # build-setup.bat creates its own .venv, installs build-requirements.txt,
-      # compiles the four exes, builds setup\XTPOS-Setup.exe, and packages
-      # release\XTPOS-<version>.zip + release\manifest.json. Reusing it keeps CI
-      # identical to the local release flow.
-      - name: Build installer + update package
+      # compiles POS.exe + Uninstall.exe, and packages the release assets the
+      # installer downloads: release\XTPOS-<version>.zip + release\manifest.json.
+      - name: Build app payload + update package
         shell: cmd
         run: build-setup.bat
 
       # The online (bootstrapper) installer: a tiny exe that downloads the
-      # latest release zip from GitHub at install time instead of bundling it.
-      # Runs after build-setup.bat and writes into the same setup\ folder
-      # without wiping the self-contained XTPOS-Setup.exe.
+      # release zip above from GitHub at install/update time instead of bundling
+      # it. This is the single shippable installer.
       - name: Build online installer
         shell: cmd
         run: build-online-setup.bat
@@ -92,5 +90,4 @@ jobs:
           files: |
             release/XTPOS-${{ steps.ver.outputs.version }}.zip
             release/manifest.json
-            setup/XTPOS-Setup.exe
             setup/XTPOS-Online-Setup.exe

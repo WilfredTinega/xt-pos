@@ -94,10 +94,10 @@ class Config:
     # (v1.2.0) and a XTPOS-<version>.zip is attached. GitHub's "latest release"
     # API always points at the newest one, so nothing is hand-edited per release.
     GITHUB_REPO = os.getenv("GITHUB_REPO", "WilfredTinega/xt-pos")
-    # The running app uses this to detect a newer release (in-app notice); the
-    # updater (Update.exe) reads its own copy from the install .env. Override
-    # with an explicit UPDATE_URL in the environment / .env; an empty value
-    # falls back to the GitHub releases URL above.
+    # The running app uses this to detect a newer release (in-app notice), then
+    # applies it by re-launching the installer (XTPOS-Setup.exe --update).
+    # Override with an explicit UPDATE_URL in the environment / .env; an empty
+    # value falls back to the GitHub releases URL above.
     UPDATE_URL = os.getenv("UPDATE_URL") or \
         f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 

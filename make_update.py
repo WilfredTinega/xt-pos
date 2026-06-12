@@ -1,10 +1,10 @@
 """Package an XT POS update: a versioned .zip of the app binaries + a manifest.
 
-The in-app updater (Update.exe) checks a JSON manifest, and if its version beats
-the installed version.txt, downloads the manifest's .zip and copies the files
-over the install folder. This script produces both — host the two output files
-at `--base-url` and point the installed app's `.env` `UPDATE_URL` at the
-manifest.
+The app detects a newer release (updates.py reads GitHub's "latest release"),
+and applying it re-launches the installer in --update mode, which downloads
+this .zip and copies the files over the install folder. This script produces
+the .zip + manifest that ship as release assets; the installer (and the in-app
+check) read GitHub's release API directly.
 
 Usage:
     python make_update.py --source setup/build/app \
@@ -13,7 +13,7 @@ Usage:
         --base-url http://127.0.0.1:8000 --notes "Test build"
 
 Outputs (default ./release):
-    release/XTPOS-<version>.zip     POS.exe + Update.exe + Uninstall.exe
+    release/XTPOS-<version>.zip     POS.exe + Uninstall.exe
     release/manifest.json           {version, url, notes, sha256}
 
 The zip deliberately contains ONLY the app executables — never .env (which holds
@@ -27,8 +27,9 @@ import os
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-# Only these files are shipped in an update — see the module docstring.
-APP_FILES = ["POS.exe", "Update.exe", "Uninstall.exe"]
+# Only these files are shipped in the app payload — see the module docstring.
+# (No Update.exe: the installer itself applies updates, in --update mode.)
+APP_FILES = ["POS.exe", "Uninstall.exe"]
 
 
 def read_version():
@@ -47,8 +48,8 @@ def sha256(path):
 def main():
     ap = argparse.ArgumentParser(description="Package an XT POS update.")
     ap.add_argument("--source", required=True,
-                    help="Folder holding the freshly-built POS.exe / Update.exe "
-                         "/ Uninstall.exe.")
+                    help="Folder holding the freshly-built POS.exe / "
+                         "Uninstall.exe.")
     ap.add_argument("--out", default=os.path.join(ROOT, "release"),
                     help="Output folder for the zip + manifest (default ./release).")
     ap.add_argument("--base-url", default=os.getenv("UPDATE_BASE_URL", ""),

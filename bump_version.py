@@ -72,7 +72,7 @@ def main():
     if os.path.isfile(CHANGELOG):
         update_changelog(new)
     print(f"Version: {current} -> {new}")
-    print("Remember to fill in the changelog, then run build-all.bat to release.")
+    print("Remember to fill in the changelog, then run release-github.bat to release.")
 
 
 if __name__ == "__main__":
