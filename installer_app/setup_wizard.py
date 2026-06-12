@@ -15,6 +15,7 @@ No Python, no MariaDB, and no other tools need to be pre-installed on the
 target PC. Internet is required during installation to download MariaDB.
 """
 import argparse
+import concurrent.futures
 import ctypes
 import hashlib
 import json
@@ -176,16 +177,137 @@ def _hidden_startupinfo():
     return si
 
 
-def download(url, dest, progress=None, log=None, attempts=6):
-    """Download url -> dest with progress, retrying and RESUMING on dropped or
-    incomplete connections.
+# How many parallel connections to split a download across, and the smallest
+# file worth splitting. Multiple connections get past per-connection throttling
+# on GitHub's / Microsoft's CDNs, so the download finishes much faster.
+DOWNLOAD_CONNECTIONS = 8
+PARALLEL_MIN_BYTES = 3 * 1024 * 1024
 
-    Large GitHub release assets redirect to a CDN, and a single dropped socket
-    would otherwise fail the whole install ("retrieval incomplete: got only N
-    of M bytes"). Each attempt sends a Range header to continue from the bytes
-    already on disk (GitHub's CDN supports ranged requests), so transfers pick up
-    where they left off instead of restarting or giving up. Raises InstallError
-    if every attempt fails."""
+
+def _human_size(n):
+    """Bytes -> a short human string, e.g. 31965217 -> '30.5 MB'."""
+    if not n or n < 0:
+        return "?"
+    f = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if f < 1024 or unit == "TB":
+            return f"{int(f)} {unit}" if unit == "B" else f"{f:.1f} {unit}"
+        f /= 1024
+
+
+def _human_time(secs):
+    """Seconds -> '8s' / '1m 45s' / '1h 04m'."""
+    secs = int(round(secs))
+    if secs < 60:
+        return f"{secs}s"
+    m, s = divmod(secs, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
+def _probe(url):
+    """Resolve final URL + total size + whether the server supports byte ranges.
+
+    Asks for a 1-byte range: a 206 reply means ranges work (and Content-Range
+    carries the full size); a 200 means they don't. Following the request also
+    resolves any redirect to the real CDN URL, which we reuse for the segment
+    requests. Returns (final_url, total_bytes, ranges_ok)."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "XTPOS-Setup", "Range": "bytes=0-0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        final_url = resp.geturl()
+        status = getattr(resp, "status", 200)
+        crange = resp.headers.get("Content-Range")
+        clen = resp.headers.get("Content-Length")
+        resp.read(1)
+        if status == 206 and crange and "/" in crange:
+            return final_url, int(crange.rsplit("/", 1)[1]), True
+        # Server ignored the range; we only know the size if it gave one.
+        total = int(clen) if (clen and status == 200) else 0
+        return final_url, total, False
+
+
+class _Progress:
+    """Thread-safe download progress aggregator that throttles UI updates to
+    ~5/sec and reports percentage, MB done/total, and live speed."""
+    def __init__(self, total, progress, status):
+        self.total = total
+        self.progress = progress
+        self.status = status
+        self.done = 0
+        self._lock = threading.Lock()
+        self._start = time.monotonic()
+        self._last = 0.0
+
+    def add(self, n):
+        with self._lock:
+            self.done += n
+            now = time.monotonic()
+            if now - self._last < 0.2 and self.done < self.total:
+                return
+            self._last = now
+            done, total, start = self.done, self.total, self._start
+        self._emit(done, total, start)
+
+    def finish(self):
+        with self._lock:
+            done, total, start = self.done, self.total, self._start
+        self._emit(done, total, start)
+
+    def _emit(self, done, total, start):
+        if total and self.progress:
+            self.progress(min(100, int(done * 100 / total)))
+        if self.status:
+            spd = done / max(1e-3, time.monotonic() - start)
+            pct = f"{min(100, int(done * 100 / total))}% — " if total else ""
+            self.status(f"{pct}{_human_size(done)} / {_human_size(total)} "
+                        f"· {_human_size(int(spd))}/s")
+
+
+def _download_segments(url, dest, total, conns, prog, log):
+    """Download `url` to `dest` using `conns` parallel ranged connections, each
+    writing its own slice of a preallocated file. Raises on failure."""
+    with open(dest, "wb") as fh:
+        fh.truncate(total)
+    seg = total // conns
+    ranges = [(i * seg, (total - 1 if i == conns - 1 else (i + 1) * seg - 1))
+              for i in range(conns)]
+
+    def fetch(start, end):
+        pos = start
+        for attempt in range(5):
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "XTPOS-Setup", "Range": f"bytes={pos}-{end}"})
+                with urllib.request.urlopen(req, timeout=60) as resp, \
+                        open(dest, "r+b") as fh:
+                    fh.seek(pos)
+                    while pos <= end:
+                        chunk = resp.read(262144)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        pos += len(chunk)
+                        prog.add(len(chunk))
+                if pos > end:
+                    return True
+            except Exception:  # noqa: BLE001 — retry this segment from `pos`
+                time.sleep(1 + attempt)
+        return False
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=conns) as ex:
+        futures = [ex.submit(fetch, s, e) for s, e in ranges]
+        ok = all(f.result() for f in futures)
+    if not ok or os.path.getsize(dest) != total:
+        raise IOError("a download segment did not complete")
+    prog.finish()
+
+
+def _download_stream(url, dest, total, prog, log, attempts=6):
+    """Single-connection download with retry + Range resume (the fallback when
+    the server won't do parallel ranges or the parallel path fails)."""
     last_err = None
     for attempt in range(1, attempts + 1):
         have = os.path.getsize(dest) if os.path.exists(dest) else 0
@@ -195,31 +317,21 @@ def download(url, dest, progress=None, log=None, attempts=6):
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as resp:
-                # Work out the full expected size for the progress bar.
-                crange = resp.headers.get("Content-Range")
-                clen = resp.headers.get("Content-Length")
-                if crange and "/" in crange:
-                    total = int(crange.rsplit("/", 1)[1])
-                elif clen is not None:
-                    total = have + int(clen)
-                else:
-                    total = 0
-                # 206 = the server honoured our Range and we append; anything
-                # else means start the file over.
                 resumed = getattr(resp, "status", 200) == 206 and have > 0
                 if not resumed:
                     have = 0
+                    prog.done = 0
                 with open(dest, "ab" if resumed else "wb") as fh:
                     while True:
-                        chunk = resp.read(65536)
+                        chunk = resp.read(262144)
                         if not chunk:
                             break
                         fh.write(chunk)
                         have += len(chunk)
-                        if progress and total:
-                            progress(min(100, int(have * 100 / total)))
+                        prog.add(len(chunk))
             got = os.path.getsize(dest)
             if not total or got >= total:
+                prog.finish()
                 return
             last_err = f"incomplete: got {got} of {total} bytes"
         except Exception as e:  # noqa: BLE001 — network drop / timeout / DNS
@@ -231,8 +343,36 @@ def download(url, dest, progress=None, log=None, attempts=6):
             time.sleep(min(2 * attempt, 10))
     raise InstallError(
         f"Download failed after {attempts} attempts.\n{last_err}\n\n"
-        "The connection to GitHub keeps dropping. Check the internet "
-        "connection (a stable link helps for the ~30 MB download) and try again.")
+        "The connection keeps dropping. Check the internet connection and "
+        "try again.")
+
+
+def download(url, dest, progress=None, log=None, status=None,
+             connections=DOWNLOAD_CONNECTIONS):
+    """Download `url` to `dest`, fast and reliably.
+
+    Uses up to `connections` parallel ranged connections when the server
+    supports them (much faster — it beats per-connection CDN throttling), and
+    falls back to a single resumable connection otherwise. Reports percentage,
+    size, and live speed via `progress`/`status`. Raises InstallError on
+    failure."""
+    try:
+        final_url, total, ranges_ok = _probe(url)
+    except Exception:  # noqa: BLE001 — probe failed; try a plain stream
+        final_url, total, ranges_ok = url, 0, False
+
+    prog = _Progress(total, progress, status)
+    if ranges_ok and total >= PARALLEL_MIN_BYTES and connections > 1:
+        conns = min(connections, max(1, total // (1024 * 1024)))
+        try:
+            _download_segments(final_url, dest, total, conns, prog, log)
+            return
+        except Exception as e:  # noqa: BLE001 — fall back to a single stream
+            if log:
+                log(f"  parallel download hit a snag ({e}); using a single "
+                    "connection…")
+            prog.done = 0
+    _download_stream(final_url, dest, total, prog, log)
 
 
 def _sha256(path):
@@ -271,26 +411,27 @@ def _fetch_latest_release():
     with urllib.request.urlopen(req, timeout=20) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     version = str(data.get("tag_name", "")).strip().lstrip("vV")
-    zip_url, digest = None, ""
+    zip_url, digest, size = None, "", 0
     for asset in data.get("assets") or []:
         name = (asset.get("name") or "").lower()
         if name.startswith("xtpos") and name.endswith(".zip"):
             zip_url = asset.get("browser_download_url")
+            size = int(asset.get("size") or 0)
             raw = asset.get("digest") or ""
             digest = raw.split(":", 1)[1] if raw.startswith("sha256:") else ""
             break
     if not zip_url:
         raise InstallError(
             "The latest GitHub release has no XTPOS .zip asset to download.")
-    return version, zip_url, digest
+    return version, zip_url, digest, size
 
 
-def _download_payload(log, progress=None):
+def _download_payload(log, progress=None, status=None):
     """Online installer: pull the latest release zip from GitHub, verify it,
     and extract it. Returns (payload_dir, version)."""
     log("Checking GitHub for the latest version…")
     try:
-        version, url, digest = _fetch_latest_release()
+        version, url, digest, size = _fetch_latest_release()
     except InstallError:
         raise
     except urllib.error.HTTPError as e:
@@ -312,7 +453,8 @@ def _download_payload(log, progress=None):
             "Could not reach GitHub to download the app.\n"
             f"{e}\n\nCheck the internet connection and try again.")
 
-    log(f"Downloading XT POS {version} from GitHub (this can take a minute)…")
+    sz = f" ({_human_size(size)})" if size else ""
+    log(f"Downloading XT POS {version} from GitHub{sz}…")
     tmp_zip = os.path.join(tempfile.gettempdir(), "xtpos-payload.zip")
     # Start fresh: never resume onto a partial file left by an earlier run (it
     # could be a different build and corrupt the result). Resume happens only
@@ -321,7 +463,13 @@ def _download_payload(log, progress=None):
         os.remove(tmp_zip)
     except OSError:
         pass
-    download(url, tmp_zip, progress, log)
+    t0 = time.monotonic()
+    download(url, tmp_zip, progress, log, status)
+    dt = time.monotonic() - t0
+    got = os.path.getsize(tmp_zip)
+    spd = got / max(1e-3, dt)
+    log(f"  ✓ Downloaded {_human_size(got)} in {_human_time(dt)} "
+        f"({_human_size(int(spd))}/s).")
 
     if digest:
         log("Verifying download…")
@@ -357,7 +505,7 @@ def _download_payload(log, progress=None):
     return src, version
 
 
-def resolve_payload(log, progress=None):
+def resolve_payload(log, progress=None, status=None):
     """Where the app files come from: the bundled payload (self-contained
     installer) or a fresh download from GitHub (online installer). Returns
     (payload_dir, version)."""
@@ -365,7 +513,7 @@ def resolve_payload(log, progress=None):
     if bundled:
         log("Using the app bundled in this installer.")
         return bundled, APP_VERSION
-    return _download_payload(log, progress)
+    return _download_payload(log, progress, status)
 
 
 # --------------------------------------------------------------------------
@@ -375,38 +523,50 @@ class InstallError(Exception):
     pass
 
 
-def install_webview2(log):
+def install_webview2(log, progress=None, status=None):
     if is_webview2_installed():
         log("WebView2 runtime already present — skipping.")
         return
     log("Downloading WebView2 runtime…")
     boot = os.path.join(tempfile.gettempdir(), "MicrosoftEdgeWebview2Setup.exe")
     try:
-        download(WEBVIEW2_URL, boot)
+        t0 = time.monotonic()
+        download(WEBVIEW2_URL, boot, progress, log, status)
+        log(f"  ✓ Downloaded in {_human_time(time.monotonic() - t0)}.")
     except Exception as e:
         log(f"WARNING: could not download WebView2 ({e}). The app may need it.")
         return
     log("Installing WebView2 runtime…")
+    t0 = time.monotonic()
     subprocess.run([boot, "/silent", "/install"],
                    creationflags=_no_window(), startupinfo=_hidden_startupinfo())
+    log(f"  ✓ WebView2 installed in {_human_time(time.monotonic() - t0)}.")
 
 
-def install_mariadb(password, port, log, progress=None):
+def install_mariadb(password, port, log, progress=None, status=None):
     """Returns True if it actually installed MariaDB, False if it was already
     present (in which case the entered password must match the existing root)."""
     if is_mariadb_installed():
         log("MariaDB is already installed — skipping download.")
         return False
     msi = os.path.join(tempfile.gettempdir(), "mariadb.msi")
-    log(f"Downloading MariaDB {MARIADB_VERSION} (this can take a few minutes)…")
+    log(f"Downloading MariaDB {MARIADB_VERSION}…")
     try:
-        download(MARIADB_URL, msi, progress)
+        t0 = time.monotonic()
+        download(MARIADB_URL, msi, progress, log, status)
+        dt = time.monotonic() - t0
+        got = os.path.getsize(msi)
+        log(f"  ✓ Downloaded {_human_size(got)} in {_human_time(dt)} "
+            f"({_human_size(int(got / max(1e-3, dt)))}/s).")
     except Exception as e:
         raise InstallError(
             f"Could not download MariaDB.\n{e}\n\n"
             "Check your internet connection and run setup again."
         )
-    log("Installing MariaDB service…")
+    log("Installing MariaDB service (this can take a few minutes)…")
+    if status:
+        status("Installing MariaDB…")
+    t0 = time.monotonic()
     params = [
         "msiexec.exe", "/i", msi, "/qn", "/norestart",
         "SERVICENAME=MariaDB", f"PORT={port}",
@@ -421,6 +581,7 @@ def install_mariadb(password, port, log, progress=None):
     # Make sure the service is running.
     subprocess.run(["net", "start", "MariaDB"],
                    creationflags=_no_window(), startupinfo=_hidden_startupinfo())
+    log(f"  ✓ MariaDB installed in {_human_time(time.monotonic() - t0)}.")
     return True
 
 
@@ -444,6 +605,7 @@ def copy_app(install_dir, src, log):
     os.makedirs(install_dir, exist_ok=True)
     if not os.path.isdir(src):
         raise InstallError("The app payload to install is missing.")
+    t0 = time.monotonic()
     # Walk-copy with a brief retry per file. On an update re-run the previous
     # POS.exe was just closed, and Windows can hold its handle open for a moment
     # after the process exits — a short retry lets the overwrite succeed instead
@@ -465,6 +627,7 @@ def copy_app(install_dir, src, log):
                             f"Could not replace {f} — it is still in use. "
                             "Close XT POS and try again.")
                     time.sleep(0.5)
+    log(f"  ✓ App files copied in {_human_time(time.monotonic() - t0)}.")
 
 
 def close_running_app(log):
@@ -644,20 +807,21 @@ def launch_app(install_dir):
     os.startfile(exe)  # noqa: S606 — launching our own installed app
 
 
-def run_install(user, password, port, shop, log, progress=None):
+def run_install(user, password, port, shop, log, progress=None, status=None):
     """Full installation pipeline. Raises InstallError on failure."""
     install_dir = os.path.join(
         os.environ.get("ProgramFiles", r"C:\Program Files"), INSTALL_DIRNAME)
+    started = time.monotonic()
 
     # Resolve the app payload FIRST. For the online installer this downloads the
     # latest release from GitHub, so a connectivity/availability problem fails
     # fast — before we touch MariaDB or the database.
-    payload, version = resolve_payload(log, progress)
+    payload, version = resolve_payload(log, progress, status)
     if progress:
         progress(0)
 
-    mariadb_was_present = not install_mariadb(password, port, log, progress)
-    install_webview2(log)
+    mariadb_was_present = not install_mariadb(password, port, log, progress, status)
+    install_webview2(log, progress, status)
     copy_app(install_dir, payload, log)
     _drop_self_copy(install_dir, log)
 
@@ -675,12 +839,14 @@ def run_install(user, password, port, shop, log, progress=None):
     write_version(install_dir, version)
     create_shortcuts(install_dir, log)
     register_uninstall(install_dir, version, log)
+    if status:
+        status("Done.")
     log("")
-    log("✓ Installation complete.")
+    log(f"✓ Installation complete in {_human_time(time.monotonic() - started)}.")
     return install_dir
 
 
-def run_update(log, progress=None):
+def run_update(log, progress=None, status=None):
     """Update an existing install in place: download the latest release from
     GitHub, close the running POS, swap the app files, and bump version.txt.
     Leaves the database, .env credentials, and MariaDB untouched. Raises
@@ -691,8 +857,9 @@ def run_update(log, progress=None):
         raise InstallError(
             f"XT POS is not installed in {install_dir}. Run the installer "
             "first.")
+    started = time.monotonic()
 
-    payload, version = _download_payload(log, progress)
+    payload, version = _download_payload(log, progress, status)
     if progress:
         progress(0)
     current = ""
@@ -709,11 +876,14 @@ def run_update(log, progress=None):
     write_version(install_dir, version)
     # Keep the Add/Remove Programs version in sync.
     register_uninstall(install_dir, version, log)
+    if status:
+        status("Done.")
     log("")
+    elapsed = _human_time(time.monotonic() - started)
     if current and current == version:
-        log(f"✓ Reinstalled version {version}.")
+        log(f"✓ Reinstalled version {version} in {elapsed}.")
     else:
-        log(f"✓ Updated to version {version}.")
+        log(f"✓ Updated to version {version} in {elapsed}.")
     return install_dir, version
 
 
@@ -843,7 +1013,10 @@ def run_gui():
             self.running = False
             self.done = False
             self.progress = ttk.Progressbar(self.frame, mode="determinate")
-            self.progress.pack(fill="x", pady=(2, 8))
+            self.progress.pack(fill="x", pady=(2, 2))
+            self.status_label = tk.Label(self.frame, bg=WHITE, fg=MUTED,
+                                         anchor="w", font=("Segoe UI", 9))
+            self.status_label.pack(fill="x", pady=(0, 8))
             self.log_box = make_log_box(self.frame)
             self.log_box.pack(fill="both", expand=True)
 
@@ -852,6 +1025,9 @@ def run_gui():
 
         def _progress(self, pct):
             self.wizard.after(lambda: self.progress.configure(value=pct))
+
+        def _status(self, text):
+            self.wizard.after(lambda: self.status_label.config(text=text))
 
         def on_enter(self):
             if self.done:
@@ -869,7 +1045,8 @@ def run_gui():
             s = self.wizard.shared
             try:
                 d = run_install(s["user"], s["password"], s["port"],
-                                s["shop"], self._log, self._progress)
+                                s["shop"], self._log, self._progress,
+                                self._status)
                 s["install_dir"] = d
                 self.done = True
                 self.running = False
@@ -940,7 +1117,7 @@ def run_update_gui():
     import tkinter as tk
     from tkinter import ttk, messagebox
 
-    from wizard_ui import Wizard, Page, WHITE, make_log_box, append_log
+    from wizard_ui import Wizard, Page, WHITE, MUTED, make_log_box, append_log
 
     class UpdatePage(Page):
         title = f"Updating {APP_NAME}"
@@ -950,7 +1127,10 @@ def run_update_gui():
             self.running = False
             self.done = False
             self.progress = ttk.Progressbar(self.frame, mode="determinate")
-            self.progress.pack(fill="x", pady=(2, 8))
+            self.progress.pack(fill="x", pady=(2, 2))
+            self.status_label = tk.Label(self.frame, bg=WHITE, fg=MUTED,
+                                         anchor="w", font=("Segoe UI", 9))
+            self.status_label.pack(fill="x", pady=(0, 8))
             self.log_box = make_log_box(self.frame)
             self.log_box.pack(fill="both", expand=True)
 
@@ -959,6 +1139,9 @@ def run_update_gui():
 
         def _progress(self, pct):
             self.wizard.after(lambda: self.progress.configure(value=pct))
+
+        def _status(self, text):
+            self.wizard.after(lambda: self.status_label.config(text=text))
 
         def on_enter(self):
             if self.done or self.running:
@@ -970,7 +1153,7 @@ def run_update_gui():
 
         def _worker(self):
             try:
-                _d, version = run_update(self._log, self._progress)
+                _d, version = run_update(self._log, self._progress, self._status)
                 self.wizard.shared["version"] = version
                 self.wizard.shared["applied"] = True
             except Exception as e:  # noqa: BLE001
