@@ -38,8 +38,11 @@
       {% endif %}
     </nav>
     <div class="user-box">
-      <a class="shift-pill {{ 'open' if current_shift else 'closed' }}" href="{{ url_for('shift_page') }}">
-        {{ 'Shift open' if current_shift else 'No shift' }}
+      <a class="shift-pill {{ 'open' if current_shift else 'closed' }}" href="{{ url_for('shift_page') }}"
+         title="{{ current_user.assigned_shift or 'No shift assigned' }}">
+        {% if current_shift %}{{ current_shift.note or 'Shift open' }}
+        {% elif current_user.assigned_shift %}{{ current_user.assigned_shift }}
+        {% else %}No shift{% endif %}
       </a>
       <details class="nav-menu user-menu">
         <summary class="{{ 'active' if current_user.is_admin and request.endpoint in settings_endpoints }}">

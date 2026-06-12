@@ -11,7 +11,15 @@ the installed app's `version.txt` — what the in-app updater compares against t
 release manifest.
 
 ## [Unreleased]
+
+## [1.2.0] - 2026-06-12
 ### Added
+- **Admin-assigned shifts.** An administrator now assigns each user's work
+  shift (Morning/Afternoon/Night) on the Users page instead of the cashier
+  picking it every time. The assigned shift shows automatically — on the nav
+  pill and the Shift page — and is applied to the till session when the cashier
+  opens it, so they only enter the opening cash float. Run `python migrate.py`
+  once to add the new `users.assigned_shift` column.
 - **Online installer (`XTPOS-Online-Setup.exe`).** A small bootstrapper that
   bundles no app files — at install time it downloads the latest
   `XTPOS-<version>.zip` from this repo's GitHub release, verifies its sha256,
